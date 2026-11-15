@@ -37,14 +37,14 @@ Add two Environment Variables in Project Settings: `VITE_SUPABASE_URL` and `VITE
 
 ## Admins
 - Who is an admin: anyone whose confirmed sign-in email is in the `admin_emails` table.
-  Add or remove them in the app (**Admin -> Settings**), or in the dashboard (Table Editor -> `admin_emails`).
-- **Admin** in the header turns on admin mode. Drag a player on court, or a spot in line:
+  Add or remove them with the settings cog next to **Invite**, or in the dashboard (Table Editor -> `admin_emails`).
+- Admin controls are available as soon as an admin signs in. Drag a player on court, or a spot in line:
   - onto a side with room: they go there (a player leaves their partner; a team in line moves together)
   - onto another player: the two swap places, on court or in line
   - into a court's queue: dropped just ahead of the row you let go on, or at the end
   - into the bin that appears at the bottom: removed
 - On a phone, press and hold a name before dragging; a quick swipe still scrolls.
-- Admins can still tap any live court to report its result, and toggle "Losers rejoin the queue" in Settings.
+- Admins can tap any live court to report its result. Use the cog on a court card to switch it between Singles and Doubles. To switch to Singles, both sides must have at most one player and the court’s queue must have no pairs. The header cog opens global settings, including "Losers rejoin the queue".
 
 ## Settings (Supabase dashboard, table `settings`)
 - More courts: `courts_count`.

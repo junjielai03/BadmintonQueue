@@ -8,6 +8,10 @@ create table auth.users (id uuid primary key, email text not null, email_confirm
 create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('app.uid', true), '')::uuid $$;
 create role anon; create role authenticated;
 create publication supabase_realtime;
+create schema realtime;
+create table realtime.messages (extension text);
+alter table realtime.messages enable row level security;
+create function realtime.topic() returns text language sql stable as $$ select current_setting('realtime.topic', true) $$;
 `;
 
 /** @param {any} PGlite the PGlite class @param {string[]} sqls schema.sql, then each migration in order */

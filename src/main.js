@@ -1,7 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import './style.css';
-import { adminButtons, buttonState, capOf, courtLayout, courtSlots, dropAction, findEntry, isLive, myPlace, nameOf, pairAction, placeLabel, queueRows, resolveSide, spotsLabel, teamName, validSelection, waitingLabel } from './logic.js';
+import { adminButtons, buttonState, capOf, courtLayout, courtSlots, dropAction, findEntry, isLive, myPlace, nameOf, pairAction, placeLabel, queueRows, resolveSide, teamName, validSelection, waitingLabel } from './logic.js';
 import { courtArt, esc, racket } from './pixel.js';
+import { createBoardPresence } from './presence.js';
 
 const URL = import.meta.env.VITE_SUPABASE_URL, KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const $app = document.getElementById('app');
@@ -41,6 +42,7 @@ const RPC = {
   reset: ['admin_reset', b => ({ p_confirm: b.confirm })],
   allow: ['admin_allow', b => ({ p_email: b.email, p_add: b.add })],
   loser: ['admin_set_loser_back', b => ({ p_loser_back: b.loserBack })],
+  courtMode: ['admin_set_court_mode', b => ({ p_court: b.court, p_mode: b.mode })],
 };
 const api = async (k, b = {}) => { const [fn, m] = RPC[k]; const { data, error } = await sb.rpc(fn, m(b)); if (error) throw new Error(error.message); return data; };
 
@@ -48,13 +50,23 @@ let S = null, mode = 'login', authErr = '', authMsg = '', booted = false;
 let requestId = 0, loadingRequest = null, sessionUser = null, signingOut = false, mutation = null;
 let pendingRender = false;
 let sel = null;          // {kind:'court', court, side} | {kind:'entry', id} | null
-let adminMode = false, visibleInviteId = null;
-// Only one dialog can be open: settings (with optional reset confirmation), or a player picker.
+let visibleInviteId = null;
 let dialog = null;
 let drag = null;          // admin drag in progress: {src, label, x, y, pointerId, touch, timer, active, ghost, over}
 let swallowClick = false; // true right after a drop, so the click that follows doesn't also select something
-const adminOn = () => adminMode && !!S?.me?.isAdmin;
+const adminOn = () => !!S?.me?.isAdmin;
 const incoming = state => state?.invites?.filter(invite => invite.to === state.me?.id) ?? [];
+let viewers = null;
+const syncPresence = createBoardPresence(sb, names => {
+  viewers = names;
+  const count = $app.querySelector('[data-viewer-count]');
+  if (count) {
+    count.textContent = viewerLabel();
+    count.parentElement.classList.toggle('connected', names !== null);
+  }
+  const list = $app.querySelector('[data-viewer-list]');
+  if (list) list.innerHTML = viewerList();
+});
 
 let toastT; const toast = m => { const t = document.getElementById('toast'); t.textContent = m; t.className = 'show'; clearTimeout(toastT); toastT = setTimeout(() => t.className = '', 3500); };
 
@@ -70,8 +82,8 @@ async function load(force) {
     if (changedUser) {
       sessionUser = user;
       S = dialog = sel = mutation = null;
-      adminMode = false;
       visibleInviteId = null;
+      void syncPresence(null);
       endDrag();
       if (booted) render();
     }
@@ -80,8 +92,7 @@ async function load(force) {
     if (request !== requestId || (next?.me && next.me.id !== user)) return;
     const changedAdmin = S?.me?.isAdmin !== next?.me?.isAdmin;
     if (changedAdmin && !next?.me?.isAdmin) {
-      adminMode = false;
-      if (dialog && dialog.kind !== 'invite') dialog = null;
+      if (['settings', 'courtSettings', 'seat', 'swap'].includes(dialog?.kind)) dialog = null;
       if (sel?.user) sel = null;
       endDrag();
     }
@@ -90,6 +101,8 @@ async function load(force) {
     if (!invites.some(invite => invite.id === visibleInviteId)) visibleInviteId = invites[0]?.id ?? null;
     if (JSON.stringify(S) !== JSON.stringify(next)) pendingRender = true;
     S = next;
+    void syncPresence(S?.me);
+    if (dialog?.court != null && !S?.courts[dialog.court]) dialog = null;
     sel = S?.me ? validSelection(S, sel) : null;
     const wasBooted = booted;
     booted = true;
@@ -131,6 +144,7 @@ async function act(k, b, done) {
 async function signOut() {
   if (signingOut) return;
   signingOut = true;
+  void syncPresence(null);
   requestId++;
   mutation = null;
   try {
@@ -145,8 +159,9 @@ async function signOut() {
 }
 
 // ---- views ----
-const WORDMARK = `<div class="brand">${racket()}<span>Slugminton</span></div>`;
+const WORDMARK = '<div class="brand"><span>Slugminton</span></div>';
 const AUTH_MARK = `<div class="brand big">${racket({ strings: true })}<span>Slugminton</span></div>`;
+const COG = '<span aria-hidden="true">⚙︎</span>';
 
 function authView() {
   const reg = mode === 'register';
@@ -163,23 +178,37 @@ function authView() {
 
 function courtLabel(c, slots) {
   const team = ids => ids.filter(Boolean).map(id => nameOf(S, id)).join(' and ') || 'open';
-  return `Court ${c + 1}: ${team(slots.a)} versus ${team(slots.b)}. ${spotsLabel(S, c) || 'Full'}. ${waitingLabel(S, c)}.`;
+  const mode = capOf(S, c) === 1 ? ' singles' : '';
+  return `Court ${c + 1}${mode}: ${team(slots.a)} versus ${team(slots.b)}.`;
+}
+
+function queueRow(row) {
+  const selected = sel?.kind === 'entry' && sel.id === row.id;
+  const names = adminOn() ? row.members.map(id =>
+    `<span class="mem" data-user="${esc(id)}">${esc(nameOf(S, id))}</span>`).join(' &amp; ') : esc(row.names);
+  return `<button type="button" class="row${selected ? ' sel' : ''}" data-act="pickEntry" data-id="${esc(row.id)}" aria-pressed="${selected}">
+    <span class="n">${row.n}</span><span>${names}</span></button>`;
 }
 
 function courtBlock(court, c, preview) {
-  const slots = courtSlots(S, c, preview), spots = spotsLabel(S, c);
+  const slots = courtSlots(S, c, preview);
   const picked = sel?.kind === 'court' && sel.court === c;
   const rows = queueRows(S, c);
-  const list = rows.length ? `<div class="queue" data-scroll="${c}" tabindex="0" aria-label="Court ${c + 1} queue">${rows.map(r => {
-    const on = sel?.kind === 'entry' && sel.id === r.id;
-    return `<button type="button" class="row${on ? ' sel' : ''}" data-act="pickEntry" data-id="${esc(r.id)}" aria-pressed="${on}"><span class="n">${r.n}</span><span>${adminOn() ? r.members.map(id => `<span class="mem" data-user="${esc(id)}">${esc(nameOf(S, id))}</span>`).join(' &amp; ') : esc(r.names)}</span></button>`;
-  }).join('')}</div>` : '';
+  const more = rows.length > 1 ? `<button type="button" class="link queue-more" data-act="openQueue" data-court="${c}" aria-haspopup="dialog" aria-label="See ${rows.length - 1} more in Court ${c + 1} queue">See ${rows.length - 1} more <span aria-hidden="true">›</span></button>` : '';
+  const queue = rows.length ? `<div class="next" data-court="${c}">
+    <div class="next-head"><span>Up next</span><span class="queue-count" aria-label="${rows.length} queue entries">${rows.length}</span></div>
+    <div class="queue-preview"><div class="queue" data-scroll="${c}" aria-label="Court ${c + 1} queue">${rows.map(queueRow).join('')}</div>${more}</div>
+  </div>` : adminOn() ? `<div class="next empty-queue" data-court="${c}">Drop into queue</div>` : '';
+  const settings = adminOn() ? `<button type="button" class="cog court-cog" data-act="openCourtSettings" data-court="${c}" aria-label="Court ${c + 1} settings" aria-haspopup="dialog">${COG}</button>` : '';
   return `<section class="court-col">
-    <button type="button" class="court${picked ? ' sel' : ''}" data-act="pickCourt" data-court="${c}" aria-pressed="${picked}" aria-label="${esc(courtLabel(c, slots))}">
-      <span class="court-head"><span class="title">Court ${c + 1}${S.courtModes?.[c] === 'singles' ? ' <small>Singles</small>' : ''}<span class="hint">Tap to join or queue</span></span>${spots ? `<span class="spots">${spots}</span>` : ''}</span>
-      ${courtArt(courtLayout(S, c, preview), id => nameOf(S, id), isLive(court), S.me.id)}
-    </button>
-    <div class="next" data-court="${c}"><div class="next-head"><span>Up next</span><span class="mute">${waitingLabel(S, c)}</span></div>${list}</div>
+    <div class="court-card">
+      <button type="button" class="court${picked ? ' sel' : ''}" data-act="pickCourt" data-court="${c}" aria-pressed="${picked}" aria-label="${esc(courtLabel(c, slots))}">
+        <span class="court-head"><span class="title">Court ${c + 1}${capOf(S, c) === 1 ? ' <small>Singles</small>' : ''}<span class="hint">Tap to join or queue</span></span></span>
+        ${courtArt(courtLayout(S, c, preview), id => nameOf(S, id), isLive(court), S.me.id)}
+      </button>
+      ${settings}
+    </div>
+    ${queue}
   </section>`;
 }
 
@@ -191,12 +220,6 @@ function actionBar(st) {
     return `<button type="button" class="cta${btn.secondary ? ' alt' : ''}"${a} aria-disabled="${btn.disabled}">${esc(btn.label)}</button>`;
   };
   return `<div class="bar${st.buttons.length > 1 ? ' stack' : ''}">${st.buttons.map(button).join('')}</div>`;
-}
-
-function adminStrip() {
-  if (!adminOn()) return '';
-  return `<div class="admin-strip"><p><b>Admin mode.</b> Drag players onto a side, onto someone to swap, into a queue, or to the bin (on a phone, press and hold first). Tap a player to team them up, split them, or remove them.</p>
-    <button type="button" class="chip-btn" data-act="settings">Settings</button></div>`;
 }
 
 function resetView() {
@@ -214,7 +237,7 @@ function resetView() {
 
 function pickerView() {
   const picker = dialog;
-  if (!picker || picker.kind === 'settings') return '';
+  if (!picker || !['invite', 'seat', 'swap'].includes(picker.kind)) return '';
   const invite = picker.kind === 'invite', swap = picker.kind === 'swap';
   const skip = swap ? new Set(findEntry(S, e => e.members.includes(picker.user))?.entry.members ?? [picker.user]) : new Set();
   const pending = new Set((S.invites ?? []).map(i => i.from === S.me.id ? i.to : i.from));
@@ -269,10 +292,54 @@ async function loadPicker(picker) {
 }
 
 function closeDialog() {
-  const kind = dialog?.kind;
+  const previous = dialog;
   dialog = null;
   render();
-  if (kind === 'invite') $app.querySelector('[data-act="openInvite"]')?.focus();
+  if (previous?.kind === 'invite') $app.querySelector('[data-act="openInvite"]')?.focus();
+  if (previous?.kind === 'viewers') $app.querySelector('[data-act="openViewers"]')?.focus();
+  if (previous?.kind === 'settings') $app.querySelector('[data-act="settings"]')?.focus();
+  if (previous?.kind === 'courtSettings') $app.querySelector(`[data-act="openCourtSettings"][data-court="${previous.court}"]`)?.focus();
+  if (previous?.kind === 'queue') {
+    const more = $app.querySelector(`[data-act="openQueue"][data-court="${previous.court}"]`);
+    const court = $app.querySelector(`[data-act="pickCourt"][data-court="${previous.court}"]`);
+    (more?.getClientRects().length ? more : court)?.focus({ preventScroll: true });
+  }
+}
+
+function viewerLabel() {
+  return viewers === null ? 'Viewers' : `${viewers.length} viewing`;
+}
+
+function viewerList() {
+  if (viewers === null) return '<p class="mute">Waiting for the live viewer list…</p>';
+  if (!viewers.length) return '<p class="mute">No viewers connected.</p>';
+  return `<ul class="viewer-names">${viewers.map(name => `<li>${esc(name)}</li>`).join('')}</ul>`;
+}
+
+function viewersView() {
+  if (dialog?.kind !== 'viewers') return '';
+  return `<div class="sheet-wrap">
+    <button type="button" class="scrim" data-act="closeViewers" tabindex="-1" aria-label="Close viewers"></button>
+    <section class="panel sheet" role="dialog" aria-modal="true" aria-labelledby="viewers-title" data-scroll="viewers">
+      <div class="sheet-head"><h2 id="viewers-title">Watching the courts</h2>
+        <button type="button" class="chip-btn" data-act="closeViewers">Close</button></div>
+      <div data-viewer-list>${viewerList()}</div>
+    </section></div>`;
+}
+
+function queueView() {
+  if (dialog?.kind !== 'queue') return '';
+  const court = dialog.court;
+  const rows = queueRows(S, court);
+  return `<div class="sheet-wrap queue-sheet-wrap${adminOn() ? ' admin' : ''}">
+    <button type="button" class="scrim" data-act="closeQueue" tabindex="-1" aria-label="Close queue"></button>
+    <section class="panel sheet queue-sheet" role="dialog" aria-modal="true" aria-labelledby="queue-title">
+      <div class="sheet-head"><h2 id="queue-title">Court ${court + 1} queue</h2>
+        <button type="button" class="chip-btn" data-act="closeQueue">Close</button></div>
+      <div class="next queue-list" data-court="${court}" data-scroll="queue-dialog">
+        ${rows.length ? rows.map(queueRow).join('') : '<p class="mute">No one is waiting.</p>'}
+      </div>
+    </section></div>`;
 }
 
 function inviteBanner() {
@@ -304,14 +371,28 @@ function cycleInvite(offset, action) {
 }
 
 function settingsView() {
-  if (dialog?.kind !== 'settings' || !adminOn()) return '';
+  if (!adminOn()) return '';
+  if (dialog?.kind === 'courtSettings') {
+    const c = dialog.court;
+    const singles = capOf(S, c) === 1;
+    return `<div class="sheet-wrap"><button type="button" class="scrim" data-act="closeSettings" tabindex="-1" aria-label="Close court settings"></button>
+      <section class="panel sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <div class="sheet-head"><h2 id="settings-title">Court ${c + 1} settings</h2>
+          <button type="button" class="chip-btn" data-act="closeSettings">Done</button></div>
+        <label class="court-mode"><span>Mode</span>
+          <select data-court-mode="${c}" aria-label="Court ${c + 1} mode">
+            <option value="doubles"${singles ? '' : ' selected'}>Doubles</option>
+            <option value="singles"${singles ? ' selected' : ''}>Singles</option>
+          </select></label>
+      </section></div>`;
+  }
+  if (dialog?.kind !== 'settings') return '';
   const admins = S.admins?.list ?? [];
   return `<div class="sheet-wrap"><button type="button" class="scrim" data-act="closeSettings" aria-label="Close settings"></button>
     <section class="panel sheet" data-scroll="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <div class="sheet-head"><h2 id="settings-title">Settings</h2><button type="button" class="chip-btn" data-act="closeSettings">Done</button></div>
-      <label class="switch"><input type="checkbox" data-act="loser"${S.loserBack ? ' checked' : ''}>
-        <span><b>Losers rejoin the queue</b><span class="mute">When off, the losing team leaves the court and has to sign up again.</span></span></label>
-      <div class="admins"><h3>Admins</h3><p class="mute">Confirmed accounts with these emails get the admin tools.</p>
+      <label class="switch"><input type="checkbox" data-act="loser"${S.loserBack ? ' checked' : ''}><b>Losers rejoin the queue</b></label>
+      <div class="admins"><h3>Admins</h3>
         <ul>${admins.map(m => `<li><span>${esc(m)}</span><button type="button" class="link" data-act="rmAdmin" data-email="${esc(m)}" aria-label="Remove ${esc(m)} as admin">Remove</button></li>`).join('')}</ul>
         <form data-form="allow" class="add"><input type="email" name="email" placeholder="name@ucsc.edu" required aria-label="New admin email"><button class="cta">Add</button></form></div>
       ${resetView()}
@@ -321,7 +402,7 @@ function settingsView() {
 function mainView() {
   const adm = adminOn(), picking = adm && (sel?.kind === 'player' || sel?.kind === 'pairWith');
   const st = picking ? adminButtons(S, sel) : buttonState(S, sel), dim = sel && !picking;
-  const adminBtn = S.me.isAdmin ? `<button type="button" class="signout${adm ? ' on' : ''}" data-act="admin" aria-pressed="${adm}">Admin</button>` : '';
+  const settings = adm ? `<button type="button" class="signout cog" data-act="settings" aria-label="Admin settings" aria-haspopup="dialog">${COG}</button>` : '';
   const place = myPlace(S);
   const canInvite = !S.readyTeammate && (!place || (place.where === 'queue' && place.entry.members.length === 1 && capOf(S, place.court) === 2));
   const placedPartner = place?.entry.members.find(id => id !== S.me.id);
@@ -331,11 +412,13 @@ function mainView() {
   const invite = `<button type="button" class="signout" data-act="openInvite"${canInvite || hasSent ? '' : ' disabled title="Invites are available when off court, unpaired, and outside a singles queue"'}>Invite</button>`;
   return `<div class="board${dim ? ' has-sel' : ''}${adm ? ' admin' : ''}${sel?.kind === 'pairWith' ? ' pairing' : ''}"${dialog ? ' inert' : ''}>
     ${inviteBanner()}
-    <header class="top${teammate ? ' has-teammate' : ''}">${WORDMARK}${teammate}<div class="top-actions">${invite}${adminBtn}<button type="button" class="signout" data-act="out">Sign out</button></div></header>
-    ${adminStrip()}
+    <header class="top${teammate ? ' has-teammate' : ''}">
+      <div class="board-brand">${WORDMARK}<button type="button" class="viewer-count${viewers === null ? '' : ' connected'}" data-act="openViewers" aria-haspopup="dialog"><span class="viewer-dot" aria-hidden="true"></span><span data-viewer-count>${viewerLabel()}</span></button></div>
+      ${teammate}<div class="top-actions"><button type="button" class="signout" data-act="out">Sign out</button>${invite}${settings}</div>
+    </header>
     <div class="courts">${S.courts.map((court, c) => courtBlock(court, c, st?.preview)).join('')}</div>
     ${dim ? '<button type="button" class="scrim" data-act="clear" aria-label="Close selection"></button>' : ''}
-    ${actionBar(st)}${adm ? '<div class="bin" aria-hidden="true">Drop here to remove</div>' : ''}</div>${settingsView()}${pickerView()}`;
+    ${actionBar(st)}${adm ? '<div class="bin" aria-hidden="true">Drop here to remove</div>' : ''}</div>${settingsView()}${pickerView()}${queueView()}${viewersView()}`;
 }
 
 /** Which half of the court was tapped: a "+" spot's own side, else the half under the pointer (null for keyboard). */
@@ -354,6 +437,7 @@ function render() {
   pendingRender = false;
   const active = document.activeElement;
   const focusedInput = active?.dataset.input;
+  const queueFocus = active?.closest('.queue-sheet') ? active.dataset : null;
   const scrolls = [...$app.querySelectorAll('[data-scroll]')].map(el => [el.dataset.scroll, el.scrollTop]);
   $app.innerHTML = S && S.me ? mainView() : authView();
   for (const [k, top] of scrolls) { const el = $app.querySelector(`[data-scroll="${k}"]`); if (el) el.scrollTop = top; }
@@ -361,7 +445,12 @@ function render() {
   if (focusedInput) {
     const input = $app.querySelector(`[data-input="${CSS.escape(focusedInput)}"]`);
     input?.focus({ preventScroll: true });
-    if (input && active.selectionStart !== null) input.setSelectionRange(active.selectionStart, active.selectionEnd);
+    if (input && typeof active.selectionStart === 'number') input.setSelectionRange(active.selectionStart, active.selectionEnd);
+  }
+  if (queueFocus) {
+    const close = $app.querySelector('.queue-sheet [data-act="closeQueue"]');
+    const row = queueFocus.id && $app.querySelector(`.queue-sheet [data-id="${CSS.escape(queueFocus.id)}"]`);
+    (row || close)?.focus({ preventScroll: true });
   }
 }
 
@@ -369,7 +458,7 @@ function render() {
 /** A tap on the dimmed scrim selects the court or queue row under it, so switching takes one tap. */
 /** Admin mode: tapping a player (on court, or a name in line) selects them; while pairing, it picks the partner. */
 function adminTap(e) {
-  if (e.target.closest('.bar, .admin-strip, .top')) return false;
+  if (e.target.closest('.bar, .top')) return false;
   const open = e.target.closest('.open[data-side]');
   if (open && sel?.kind !== 'pairWith') { openPicker({ kind: 'seat', court: +open.closest('.court').dataset.court, side: open.dataset.side }); return true; }
   let user = e.target.closest('.tag[data-user]:not(.preview), .mem[data-user], .tm[data-user]')?.dataset.user;
@@ -383,24 +472,40 @@ function adminTap(e) {
     if (a?.error) toast(a.error); else if (a) act(a.k, a.b, a.msg);
     return true;
   }
+  if (dialog?.kind === 'queue') dialog = null;
   sel = sel?.kind === 'player' && sel.user === user ? null : { kind: 'player', user };
   render();
   return true;
 }
 
 function underScrim(e) {
-  return document.elementsFromPoint(e.clientX, e.clientY).map(el => el.closest('[data-act="pickCourt"],[data-act="pickEntry"]')).find(Boolean) || null;
+  return document.elementsFromPoint(e.clientX, e.clientY).map(el => el.closest('[data-act="pickCourt"],[data-act="pickEntry"],[data-act="openQueue"],[data-act="openCourtSettings"],[data-act="settings"],[data-act="openViewers"]')).find(Boolean) || null;
 }
 
 $app.addEventListener('click', e => {
   if (swallowClick) { swallowClick = false; e.preventDefault(); e.stopPropagation(); return; }  // the click that ends a drag
-  if (adminOn() && !dialog && adminTap(e)) return;
+  if (adminOn() && (!dialog || dialog.kind === 'queue') && adminTap(e)) return;
   let b = e.target.closest('[data-act]'); if (!b) return;
   if (b.dataset.act === 'clear') b = underScrim(e) || b;
   const d = b.dataset;
   const map = {
     pickCourt: () => { const c = +d.court; sel = { kind: 'court', court: c, side: resolveSide(S, c, tappedSide(e, b)) }; render(); },
-    pickEntry: () => { sel = sel?.kind === 'entry' && sel.id === d.id ? null : { kind: 'entry', id: d.id }; render(); },
+    pickEntry: () => {
+      const fromQueue = dialog?.kind === 'queue';
+      if (fromQueue) dialog = null;
+      sel = sel?.kind === 'entry' && sel.id === d.id ? null : { kind: 'entry', id: d.id };
+      render();
+      if (fromQueue) $app.querySelector('.bar button[data-act]')?.focus({ preventScroll: true });
+    },
+    openQueue: () => {
+      const court = +d.court;
+      if (queueRows(S, court).length < 2) return;
+      dialog = { kind: 'queue', court };
+      if (sel?.kind !== 'pairWith') sel = null;
+      render();
+      $app.querySelector('.queue-sheet button[data-act="closeQueue"]')?.focus();
+    },
+    closeQueue: closeDialog,
     clear: () => { sel = null; render(); },
     do: () => {
       const args = JSON.parse(d.b);
@@ -408,9 +513,21 @@ $app.addEventListener('click', e => {
     },
     out: signOut,
     mode: () => { mode = mode === 'login' ? 'register' : 'login'; authErr = authMsg = ''; render(); },
-    admin: () => { adminMode = !adminMode; sel = null; render(); },
     settings: () => { dialog = { kind: 'settings', resetWord: null }; sel = null; render(); $app.querySelector('[data-act="closeSettings"]:not(.scrim)')?.focus(); },
+    openCourtSettings: () => {
+      dialog = { kind: 'courtSettings', court: +d.court };
+      sel = null;
+      render();
+      $app.querySelector('[data-court-mode]')?.focus();
+    },
     openInvite: () => openPicker({ kind: 'invite' }),
+    openViewers: () => {
+      dialog = { kind: 'viewers' };
+      sel = null;
+      render();
+      $app.querySelector('.sheet [data-act="closeViewers"]')?.focus();
+    },
+    closeViewers: closeDialog,
     leaveTeam: () => act('leaveTeam', {}, 'You left the team'),
     prevInvite: () => cycleInvite(-1, d.act),
     nextInvite: () => cycleInvite(1, d.act),
@@ -507,7 +624,12 @@ function startDrag(x = drag?.x, y = drag?.y) {
   navigator.vibrate?.(30);
   drag.ghost = Object.assign(document.createElement('div'), { className: 'drag-ghost', textContent: drag.label });
   document.body.append(drag.ghost);
-  $app.querySelector('.board')?.classList.add('dragging');
+  const board = $app.querySelector('.board');
+  board?.classList.add('dragging');
+  if (board && dialog?.kind === 'queue') {
+    board.inert = false;
+    $app.querySelector('.queue-sheet-wrap')?.classList.add('queue-dragging');
+  }
   moveDrag(x, y);
 }
 
@@ -529,7 +651,12 @@ function endDrag(drop = false) {
   if (!d.active) return;
   d.ghost.remove();
   if (d.over) { d.over.el.classList.remove('drop-on'); delete d.over.el.dataset.drop; }
-  $app.querySelector('.board')?.classList.remove('dragging');
+  const board = $app.querySelector('.board');
+  board?.classList.remove('dragging');
+  if (board && dialog?.kind === 'queue') {
+    board.inert = true;
+    $app.querySelector('.queue-sheet-wrap')?.classList.remove('queue-dragging');
+  }
   swallowClick = true; setTimeout(() => { swallowClick = false; }, 400);
   if (pendingRender) { pendingRender = false; render(); }
   if (!drop) return;
@@ -539,7 +666,7 @@ function endDrag(drop = false) {
 }
 
 $app.addEventListener('pointerdown', e => {
-  if (!adminOn() || dialog || drag || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  if (!adminOn() || (dialog && dialog.kind !== 'queue') || drag || (e.pointerType === 'mouse' && e.button !== 0)) return;
   const s = dragSource(e.target); if (!s) return;
   const touch = e.pointerType !== 'mouse';
   drag = { ...s, x: e.clientX, y: e.clientY, pointerId: e.pointerId, touch, active: false };
@@ -568,6 +695,16 @@ $app.addEventListener('input', e => {
     if (empty) empty.hidden = picks.some(pick => !pick.parentElement.hidden);
   }
   if (k === 'resetWord') { dialog.resetWord = e.target.value; $app.querySelector('[data-act="resetDo"]')?.setAttribute('aria-disabled', String(dialog.resetWord.trim() !== 'CLEAR')); }
+});
+
+$app.addEventListener('change', async e => {
+  if (!e.target.matches('[data-court-mode]')) return;
+  const court = +e.target.dataset.courtMode;
+  const mode = e.target.value;
+  const settings = dialog;
+  e.target.value = S.courtModes?.[court] ?? 'doubles';
+  await act('courtMode', { court, mode }, `Court ${court + 1} switched to ${mode}`);
+  if (dialog === settings) $app.querySelector(`[data-court-mode="${court}"]`)?.focus({ preventScroll: true });
 });
 
 $app.addEventListener('submit', async e => {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { adminButtons, buttonState, courtLayout, courtQueue, dropAction, pairAction, placeLabel, courtSlots, myPlace, openSpots, queueRows, resolveSide, spotsLabel, validSelection, waitingLabel } from './logic.js';
+import { courtArt } from './pixel.js';
 
 const names = { me: 'Alex', maya: 'Maya', jon: 'Jon', priya: 'Priya', sam: 'Sam', ava: 'Ava', leo: 'Leo', noor: 'Noor', kai: 'Kai' };
 const e = (id, members, queueCourt = null) => ({ id, members, queueCourt, streak: 0 });
@@ -286,6 +287,13 @@ describe('admin pairing', () => {
 });
 
 describe('court tools', () => {
+  test('an over-capacity singles court renders all existing player names', () => {
+    const S = state({ courtModes: ['singles', 'doubles'] });
+    const html = courtArt(courtLayout(S, 0), id => S.names[id], true, S.me.id);
+    expect(html).toContain('Over capacity');
+    for (const id of ['maya', 'jon', 'priya', 'sam']) expect(html).toContain(S.names[id]);
+    expect(courtSlots(S, 0).a).toEqual(['maya', 'jon']);
+  });
   const S = state();  // Court 1: Maya & Jon vs Priya & Sam (teams). Court 2: Kai alone on the left. Court 1 queue: Ava & Leo, Noor.
 
   test('teams are drawn as one group; singles and open spots one by one', () => {

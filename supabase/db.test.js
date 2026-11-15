@@ -48,6 +48,29 @@ async function put(members, court, side, queueCourt = court) {
   for (const m of members) await db.query('insert into entry_members (user_id, entry_id) values ($1, $2)', [P[m], id]);
 }
 
+describe('court modes', () => {
+  test('only an admin can switch a valid court between singles and doubles', async () => {
+    const singles = { p_court: 1, p_mode: 'singles' };
+    await expect(as('Kai', 'admin_set_court_mode', singles)).rejects.toThrow('Admins only.');
+    await expect(admin('admin_set_court_mode', { ...singles, p_court: 2 })).rejects.toThrow('No such court.');
+    await admin('admin_set_court_mode', singles);
+    await admin('admin_set_court_mode', singles);
+    expect((await state()).courtModes).toEqual(['doubles', 'singles']);
+    await admin('admin_set_court_mode', { ...singles, p_mode: 'doubles' });
+    expect((await state()).courtModes).toEqual(['doubles', 'doubles']);
+  });
+
+  test('a switch to singles preserves the board when there are extra players or waiting pairs', async () => {
+    const singles = { p_court: 0, p_mode: 'singles' };
+    await expect(admin('admin_set_court_mode', singles)).rejects.toThrow('Move extra players');
+    await admin('admin_pair', { p_user: P.Leo, p_target: P.Ava });
+    await db.exec('delete from entries where court = 0');
+    await expect(admin('admin_set_court_mode', singles)).rejects.toThrow('Move waiting teams');
+    expect((await board()).queues[0]).toEqual(['Ava+Leo', 'Noor']);
+    expect((await state()).courtModes[0]).toBe('doubles');
+  });
+});
+
 describe('admin-only', () => {
   test('players cannot call the new admin functions', async () => {
     await expect(as('Maya', 'admin_place', { p_court: 1, p_side: 'b', p_user: P.Maya })).rejects.toThrow('Admins only.');

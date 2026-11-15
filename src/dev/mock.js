@@ -41,6 +41,21 @@ export async function createMockClient() {
       signUp: async () => ({ data: {}, error: { message: 'Sign-up is off in mock mode. Sign in with any details.' } }),
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
     },
-    channel: () => { const ch = { on: () => ch, subscribe: () => ch }; return ch; },
+    removeChannel: async () => 'ok',
+    channel: () => {
+      let sync, viewer;
+      const ch = {
+        on: (type, _, callback) => { if (type === 'presence') sync = callback; return ch; },
+        subscribe: callback => { callback?.('SUBSCRIBED'); return ch; },
+        track: async user => { viewer = user; sync?.(); return 'ok'; },
+        presenceState: () => ({
+          you: [viewer],
+          maya: [{ id: id(1), name: NAMES[1] }],
+          mayaPhone: [{ id: id(1), name: NAMES[1] }],
+          rin: [{ id: id(9), name: NAMES[9] }],
+        }),
+      };
+      return ch;
+    },
   };
 }

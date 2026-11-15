@@ -31,8 +31,8 @@ export const resolveSide = (S, c, wanted) => {
 export const courtSlots = (S, c, preview = null) => {
   const cap = capOf(S, c), court = S.courts[c];
   const fill = list => {
-    const ids = list.flatMap(e => e.members).slice(0, cap);
-    return [...ids, ...Array(cap - ids.length).fill(null)];
+    const ids = list.flatMap(e => e.members);
+    return [...ids, ...Array(Math.max(0, cap - ids.length)).fill(null)];
   };
   const slots = { a: fill(court.a), b: fill(court.b) };
   if (preview?.court === c && preview.side) {

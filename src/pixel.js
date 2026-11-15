@@ -61,10 +61,20 @@ const pct = (v, total) => `${((v / total) * 100).toFixed(1)}%`;
 export function courtArt(layout, nameOf, live, meId) {
   const { cap } = layout;
   let sprites = '', overlays = '';
+  const overflow = [];
   const at = (x, y) => `left:${pct(x, 64)};top:${pct(y, 30)}`;
   for (const side of ['a', 'b']) {
     let slot = 0;
     for (const spot of layout[side]) {
+      const size = spot.team ? spot.members.length : 1;
+      if (slot + size > cap) {
+        if (spot.team || !spot.open) {
+          const members = spot.team ? spot.members : [spot.id];
+          overflow.push(...members.map(id => `<span class="tag${id === meId ? ' me' : ''}" data-user="${esc(id)}">${esc(nameOf(id))}</span>`));
+        }
+        slot += size;
+        continue;
+      }
       if (spot.team) {
         const [p1, p2] = TEAM[side];
         spot.members.forEach((id, i) => { sprites += sprite(i ? p2 : p1, side, id); });
@@ -85,7 +95,8 @@ export function courtArt(layout, nameOf, live, meId) {
   }
   const shuttle = live ? px(36, 11, 1, 1, '#FFFFFF') + px(37, 11, 1, 1, INK, ' opacity="0.5"') : '';
   return `<span class="art"><svg viewBox="0 0 64 30" shape-rendering="crispEdges" aria-hidden="true">${
-    px(0, 0, 64, 30, GRASS) + px(4, 3, 56, 24, COURT) + LINES + NET_ART + sprites + shuttle}</svg>${overlays}</span>`;
+    px(0, 0, 64, 30, GRASS) + px(4, 3, 56, 24, COURT) + LINES + NET_ART + sprites + shuttle}</svg>${overlays}</span>
+    ${overflow.length ? `<span class="court-overflow">Over capacity ${overflow.join(' ')}</span>` : ''}`;
 }
 
 export { esc };
