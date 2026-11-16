@@ -160,14 +160,13 @@ async function signOut() {
 
 // ---- views ----
 const WORDMARK = '<div class="brand"><span>Slugminton</span></div>';
-const AUTH_MARK = `<div class="brand big">${racket({ strings: true })}<span>Slugminton</span></div>`;
 const COG = '<span aria-hidden="true">⚙︎</span>';
 
 function authView() {
   const reg = mode === 'register';
-  return `<main class="auth"><div class="panel">${AUTH_MARK}
-    <h1>${reg ? 'Join the club' : 'Next up on court'}</h1>
-    <p class="mute">${reg ? 'Create an account to claim a spot on court.' : 'Sign in to see the courts and your place in line.'}</p>
+  const mark = reg ? 'div' : 'h1';
+  return `<main class="auth"><div class="panel"><${mark} class="brand big">${racket({ strings: true })}<span>Slugminton</span></${mark}>
+    ${reg ? '<h1>Join the club</h1><p class="mute">Create an account to claim a spot on court.</p>' : ''}
     <form data-form="auth">${reg ? '<label>Your name<input type="text" name="name" autocomplete="name" required maxlength="40"></label>' : ''}
       <label>Email<input type="email" name="email" autocomplete="email" required></label>
       <label>Password<input type="password" name="password" placeholder="8+ characters" autocomplete="${reg ? 'new-password' : 'current-password'}" required minlength="8"></label>
@@ -194,7 +193,7 @@ function courtBlock(court, c, preview) {
   const slots = courtSlots(S, c, preview);
   const picked = sel?.kind === 'court' && sel.court === c;
   const rows = queueRows(S, c);
-  const more = rows.length > 1 ? `<button type="button" class="link queue-more" data-act="openQueue" data-court="${c}" aria-haspopup="dialog" aria-label="See ${rows.length - 1} more in Court ${c + 1} queue">See ${rows.length - 1} more <span aria-hidden="true">›</span></button>` : '';
+  const more = rows.length > 1 ? `<button type="button" class="queue-more" data-act="openQueue" data-court="${c}" aria-haspopup="dialog" aria-label="See ${rows.length - 1} more in Court ${c + 1} queue">See ${rows.length - 1} more <span aria-hidden="true">›</span></button>` : '';
   const queue = rows.length ? `<div class="next" data-court="${c}">
     <div class="next-head"><span>Up next</span><span class="queue-count" aria-label="${rows.length} queue entries">${rows.length}</span></div>
     <div class="queue-preview"><div class="queue" data-scroll="${c}" aria-label="Court ${c + 1} queue">${rows.map(queueRow).join('')}</div>${more}</div>
@@ -295,9 +294,8 @@ function closeDialog() {
   const previous = dialog;
   dialog = null;
   render();
-  if (previous?.kind === 'invite') $app.querySelector('[data-act="openInvite"]')?.focus();
+  if (previous?.kind === 'invite' || previous?.kind === 'settings') $app.querySelector('.top-actions summary')?.focus();
   if (previous?.kind === 'viewers') $app.querySelector('[data-act="openViewers"]')?.focus();
-  if (previous?.kind === 'settings') $app.querySelector('[data-act="settings"]')?.focus();
   if (previous?.kind === 'courtSettings') $app.querySelector(`[data-act="openCourtSettings"][data-court="${previous.court}"]`)?.focus();
   if (previous?.kind === 'queue') {
     const more = $app.querySelector(`[data-act="openQueue"][data-court="${previous.court}"]`);
@@ -307,21 +305,21 @@ function closeDialog() {
 }
 
 function viewerLabel() {
-  return viewers === null ? 'Viewers' : `${viewers.length} viewing`;
+  return viewers === null ? 'Online' : `${viewers.length} Online`;
 }
 
 function viewerList() {
-  if (viewers === null) return '<p class="mute">Waiting for the live viewer list…</p>';
-  if (!viewers.length) return '<p class="mute">No viewers connected.</p>';
+  if (viewers === null) return '<p class="mute">Checking who’s online…</p>';
+  if (!viewers.length) return '<p class="mute">No one is online.</p>';
   return `<ul class="viewer-names">${viewers.map(name => `<li>${esc(name)}</li>`).join('')}</ul>`;
 }
 
 function viewersView() {
   if (dialog?.kind !== 'viewers') return '';
   return `<div class="sheet-wrap">
-    <button type="button" class="scrim" data-act="closeViewers" tabindex="-1" aria-label="Close viewers"></button>
+    <button type="button" class="scrim" data-act="closeViewers" tabindex="-1" aria-label="Close Online"></button>
     <section class="panel sheet" role="dialog" aria-modal="true" aria-labelledby="viewers-title" data-scroll="viewers">
-      <div class="sheet-head"><h2 id="viewers-title">Watching the courts</h2>
+      <div class="sheet-head"><h2 id="viewers-title">Online</h2>
         <button type="button" class="chip-btn" data-act="closeViewers">Close</button></div>
       <div data-viewer-list>${viewerList()}</div>
     </section></div>`;
@@ -402,19 +400,22 @@ function settingsView() {
 function mainView() {
   const adm = adminOn(), picking = adm && (sel?.kind === 'player' || sel?.kind === 'pairWith');
   const st = picking ? adminButtons(S, sel) : buttonState(S, sel), dim = sel && !picking;
-  const settings = adm ? `<button type="button" class="signout cog" data-act="settings" aria-label="Admin settings" aria-haspopup="dialog">${COG}</button>` : '';
+  const settings = adm ? '<button type="button" data-act="settings" aria-haspopup="dialog">Admin settings</button>' : '';
   const place = myPlace(S);
   const canInvite = !S.readyTeammate && (!place || (place.where === 'queue' && place.entry.members.length === 1 && capOf(S, place.court) === 2));
   const placedPartner = place?.entry.members.find(id => id !== S.me.id);
   const teammateName = S.readyTeammate?.name ?? (placedPartner ? nameOf(S, placedPartner) : null);
   const teammate = teammateName === null ? '' : `<div class="teammate"><span>Teammate: <strong>${esc(teammateName)}</strong></span>${S.readyTeammate ? '<button type="button" class="link" data-act="leaveTeam">Leave team</button>' : ''}</div>`;
   const hasSent = S.invites?.some(i => i.from === S.me.id);
-  const invite = `<button type="button" class="signout" data-act="openInvite"${canInvite || hasSent ? '' : ' disabled title="Invites are available when off court, unpaired, and outside a singles queue"'}>Invite</button>`;
+  const invite = `<button type="button" data-act="openInvite" aria-haspopup="dialog"${canInvite || hasSent ? '' : ' disabled title="Invites are available when off court, unpaired, and outside a singles queue"'}>Invite</button>`;
   return `<div class="board${dim ? ' has-sel' : ''}${adm ? ' admin' : ''}${sel?.kind === 'pairWith' ? ' pairing' : ''}"${dialog ? ' inert' : ''}>
     ${inviteBanner()}
     <header class="top${teammate ? ' has-teammate' : ''}">
       <div class="board-brand">${WORDMARK}<button type="button" class="viewer-count${viewers === null ? '' : ' connected'}" data-act="openViewers" aria-haspopup="dialog"><span class="viewer-dot" aria-hidden="true"></span><span data-viewer-count>${viewerLabel()}</span></button></div>
-      ${teammate}<div class="top-actions"><button type="button" class="signout" data-act="out">Sign out</button>${invite}${settings}</div>
+      ${teammate}<details class="top-actions">
+        <summary aria-label="Menu"><span class="hamburger" aria-hidden="true"></span></summary>
+        <div class="top-actions-list">${invite}${settings}<button type="button" data-act="out">Sign out</button></div>
+      </details>
     </header>
     <div class="courts">${S.courts.map((court, c) => courtBlock(court, c, st?.preview)).join('')}</div>
     ${dim ? '<button type="button" class="scrim" data-act="clear" aria-label="Close selection"></button>' : ''}
@@ -438,8 +439,18 @@ function render() {
   const active = document.activeElement;
   const focusedInput = active?.dataset.input;
   const queueFocus = active?.closest('.queue-sheet') ? active.dataset : null;
+  const openMenu = $app.querySelector('.top-actions[open]');
+  const menuFocused = openMenu?.contains(active);
   const scrolls = [...$app.querySelectorAll('[data-scroll]')].map(el => [el.dataset.scroll, el.scrollTop]);
   $app.innerHTML = S && S.me ? mainView() : authView();
+  const menu = openMenu && !dialog && $app.querySelector('.top-actions');
+  if (menu) {
+    menu.open = true;
+    if (menuFocused) {
+      const action = active.dataset.act && menu.querySelector(`[data-act="${CSS.escape(active.dataset.act)}"]:not(:disabled)`);
+      (action || menu.querySelector('summary')).focus({ preventScroll: true });
+    }
+  }
   for (const [k, top] of scrolls) { const el = $app.querySelector(`[data-scroll="${k}"]`); if (el) el.scrollTop = top; }
   if (sel?.user) $app.querySelectorAll(`[data-user="${CSS.escape(sel.user)}"]`).forEach(el => el.classList.add('picked'));
   if (focusedInput) {
@@ -488,6 +499,8 @@ $app.addEventListener('click', e => {
   let b = e.target.closest('[data-act]'); if (!b) return;
   if (b.dataset.act === 'clear') b = underScrim(e) || b;
   const d = b.dataset;
+  const menu = b.closest('.top-actions');
+  if (menu) menu.open = false;
   const map = {
     pickCourt: () => { const c = +d.court; sel = { kind: 'court', court: c, side: resolveSide(S, c, tappedSide(e, b)) }; render(); },
     pickEntry: () => {
@@ -566,10 +579,22 @@ $app.addEventListener('click', e => {
   };
   map[d.act]?.();
 });
+document.addEventListener('click', e => {
+  if (!e.target.closest('.top-actions')) {
+    const menu = $app.querySelector('.top-actions[open]');
+    if (menu) menu.open = false;
+  }
+});
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   if (drag) { endDrag(); return; }
   if (dialog) { closeDialog(); return; }
+  const menu = $app.querySelector('.top-actions[open]');
+  if (menu) {
+    menu.open = false;
+    menu.querySelector('summary').focus();
+    return;
+  }
   if (!sel) return;
   sel = null; render();
 });
